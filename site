@@ -1,0 +1,89 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // users: kullanıcı profili
+    match /users/{userId} {
+      // okunabilir olması için girişli olmayı zorunlu tutuyoruz
+      allow read: if request.auth != null;
+
+      // kullanıcı sadece kendi profiline yazabilir / güncelleyebilir
+      allow create, update: if request.auth != null
+        && request.auth.uid == userId
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() > 0
+        && request.resource.data.displayName.size() <= 200;
+
+      // silme yasak (güvenlik/izlenebilirlik için)
+      allow delete: if false;
+    }
+
+    // onlineUsers: presence (geçici) — sadece kendi UID ile yazma/okuma
+    match /onlineUsers/{userId} {
+      allow read: if request.auth != null;
+      allow create, update, delete: if request.auth != null
+        && request.auth.uid == userId
+        && request.resource.data.displayName is string
+        && request.resource.data.lastSeen is timestamp;
+    }
+
+    // documents: ana doküman koleksiyonu
+    match /documents/{docId} {
+      // uygulamada kullanıcı girişi zorunlu görünüyor, bu yüzden read only auth
+      allow read: if request.auth != null;
+
+      // create: authenticated ve owner == auth.uid
+      allow create: if request.auth != null
+        && request.resource.data.keys().hasAll(['title','content','owner','ownerName','createdAt','updatedAt','lastEditedBy'])
+        && request.resource.data.title is string
+        && request.resource.data.title.size() > 0
+        && request.resource.data.title.size() <= 300
+        && request.resource.data.content is string
+        && request.resource.data.content.size() <= 200000
+        && request.resource.data.owner == request.auth.uid
+        && request.resource.data.lastEditedBy == request.auth.uid;
+
+      // update: authenticated; owner alanı değiştirilemez; güncelleyen lastEditedBy olarak kendi UID'sini vermeli
+      allow update: if request.auth != null
+        && request.resource.data.title is string
+        && request.resource.data.title.size() > 0
+        && request.resource.data.title.size() <= 300
+        && request.resource.data.content is string
+        && request.resource.data.content.size() <= 200000
+        // owner sabit kalmalı
+        && request.resource.data.owner == resource.data.owner
+        // güncelleyen UID kendisi olmalı (kod saveDocument bunu set ediyor)
+        && request.resource.data.lastEditedBy == request.auth.uid;
+
+      // silme SUNUCU TARAFINDAN TAMAMEN YASAK (kullanıcının "sil" butonu olsa bile başarısız olur)
+      allow delete: if false;
+
+      // alt koleksiyonlara izin (ör. revisions ekleyeceksen burayı genişlet)
+      match /{subcollection=**} {
+        allow read: if request.auth != null;
+        allow create, update: if request.auth != null;
+        allow delete: if false;
+      }
+    }
+
+    // activeEditors: hangi kullanıcılar bir dokümanı aktif düzenliyor
+    match /activeEditors/{docId} {
+      allow read: if request.auth != null;
+
+      // Sadece kimlikli kullanıcılar kendi entry'lerini ekleyip güncelleyebilsin.
+      // request.resource.data[request.auth.uid] ifadesi dinamik anahtar kontrolü için kullanılır.
+      allow create, update: if request.auth != null
+        && (request.resource.data[request.auth.uid] is map)
+        && (request.resource.data[request.auth.uid].displayName is string)
+        && (request.resource.data[request.auth.uid].joinedAt is timestamp);
+
+      // bu koleksiyondaki belgeyi silmeye izin ver (transient)
+      allow delete: if request.auth != null;
+    }
+
+    // varsayılan: diğer tüm koleksiyonlar deny et
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
